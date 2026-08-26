@@ -1,0 +1,7 @@
+node_modules/
+session/
+outbox/
+data/db.json
+.env
+*.log
+.DS_Store
