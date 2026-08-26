@@ -25,11 +25,12 @@ function help() {
     '',
     '*📝 Daftar akun baru*',
     '1. Balas *1*, lalu kirim NIM Anda.',
-    '2. Jika NIM terdaftar di sistem, akun langsung dibuat dan username serta kata sandi dikirim ke email Anda.',
+    '2. Masukkan kode verifikasi 6 digit yang dikirim ke email Anda.',
+    '3. Buat kata sandi baru (minimal 8 karakter, kombinasi huruf dan angka).',
     '',
     '*🔑 Ganti kata sandi*',
     '1. Balas *2*, lalu kirim NIM Anda.',
-    '2. Masukkan kode verifikasi yang dikirim ke email Anda.',
+    '2. Masukkan kode verifikasi 6 digit yang dikirim ke email Anda.',
     '3. Buat kata sandi baru (minimal 8 karakter, kombinasi huruf dan angka).',
     '',
     '*🔒 Catatan keamanan*',
@@ -47,7 +48,6 @@ function askNimForRegister() {
     '📝 *Pendaftaran Akun Baru*',
     '',
     'Kirimkan NIM Anda sekarang.',
-    `Contoh: ${mono('2109119012')}`,
     '',
     '_Balas *batal* untuk membatalkan._',
   ].join('\n');
@@ -58,7 +58,6 @@ function askNimForReset() {
     '🔑 *Ganti Kata Sandi*',
     '',
     'Kirimkan NIM Anda untuk menerima kode verifikasi via email.',
-    `Contoh: ${mono('2109119012')}`,
     '',
     '_Balas *batal* untuk membatalkan._',
   ].join('\n');
@@ -70,51 +69,38 @@ function checking() {
 
 function registerSuccess(result) {
   return [
-    '✅ *Verifikasi Berhasil!*',
+    '✅ *Pendaftaran Berhasil!*',
     '',
-    'Selamat, akun Anda telah dibuat. 🎉',
-    'Username dan kata sandi awal telah dikirim ke:',
+    'Akun Anda telah dibuat. 🎉',
     `📧 ${result.email}`,
     '',
-    'Silakan cek kotak masuk (atau folder *Spam/Promosi*), lalu masuk ke:',
+    'Silakan masuk ke:',
     appUrl,
     '',
-    '_Segera ganti kata sandi Anda setelah login pertama._',
+    'Gunakan email dan password yang baru saja Anda buat.',
   ].join('\n');
 }
 
-function alreadyRegistered(result) {
-  const parts = [
+function alreadyRegistered() {
+  return [
     '⚠️ *NIM Sudah Terdaftar*',
     '',
     'Akun dengan NIM tersebut sudah ada di sistem.',
-    'Username, kata sandi saat ini, beserta tautan khusus untuk mengganti kata sandi telah dikirim ke:',
-    `📧 ${result.email}`,
+    'Silakan login menggunakan akun yang sudah ada.',
     '',
-    '_Cek folder *Spam/Promosi* bila email tidak ditemukan._',
-  ];
-  return parts.join('\n');
+    'Balas *2* jika ingin mengganti kata sandi.',
+  ].join('\n');
 }
 
 function nimNotFound(nim) {
   return [
     '❌ *NIM Tidak Ditemukan*',
     '',
-    `NIM ${mono(nim)} tidak terdaftar dalam sistem, sehingga permintaan pembuatan akun *ditolak*.`,
+    `NIM ${mono(nim)} tidak terdaftar dalam sistem.`,
     '',
-    `Pastikan NIM yang Anda kirim benar. Bila Anda yakin NIM sudah benar, hubungi ${adminContact}.`,
+    `Pastikan NIM yang Anda kirim benar. Bila yakin sudah benar, hubungi ${adminContact}.`,
     '',
-    '_Balas *1* untuk mencoba lagi._',
-  ].join('\n');
-}
-
-function noAccount() {
-  return [
-    'ℹ️ *Belum Memiliki Akun*',
-    '',
-    'NIM Anda terdaftar di akademik, tetapi belum memiliki akun LMS.',
-    '',
-    'Balas *1* untuk membuat akun terlebih dahulu.',
+    '_Balas *1* untuk mencoba lagi, atau *batal* untuk keluar._',
   ].join('\n');
 }
 
@@ -122,7 +108,7 @@ function invalidNimFormat() {
   return [
     '⚠️ *Format NIM Tidak Valid*',
     '',
-    'NIM hanya boleh berisi angka (6–15 digit), tanpa huruf atau simbol.',
+    'NIM hanya boleh berisi angka (6–15 digit).',
     'Balas dengan NIM yang benar, atau balas *batal*.',
   ].join('\n');
 }
@@ -132,9 +118,9 @@ function otpSent(result) {
     '🔐 *Kode Verifikasi Terkirim*',
     '',
     'Kode verifikasi (6 digit) telah dikirim ke:',
-    `📧 ${mono(result.emailMasked)}`,
+    `📧 ${result.emailMasked}`,
     '',
-    `Berlaku selama *${result.expiresInMinutes} menit*.`,
+    'Berlaku selama *10 menit*.',
     'Balas pesan ini dengan kode tersebut.',
   ].join('\n');
 }
@@ -149,7 +135,7 @@ function askNewPassword() {
     '',
     'Balas dengan kata sandi baru Anda.',
     '',
-    'Syarat kata sandi:',
+    'Syarat:',
     '• Minimal 8 karakter',
     '• Mengandung huruf dan angka',
     '• Tanpa spasi',
@@ -180,43 +166,53 @@ function passwordUpdated() {
   ].join('\n');
 }
 
-function resetFailed(result) {
-  if (result.kind === 'invalid_code') {
-    return [
-      '❌ *Kode Tidak Valid*',
-      '',
-      'Kode verifikasi salah atau sudah kedaluwarsa.',
-      'Balas *2* untuk meminta kode baru.',
-    ].join('\n');
-  }
-  return genericFailure(result);
+function wrongOtp(attemptsLeft) {
+  return [
+    '❌ *Kode Verifikasi Salah*',
+    '',
+    `Sisa percobaan: *${attemptsLeft}*`,
+    'Balas dengan kode yang benar, atau balas *batal*.',
+  ].join('\n');
 }
 
-function otpRequestFailed(result, nim) {
-  if (result.kind === 'invalid') return nimNotFound(nim);
-  if (result.kind === 'no_account') return noAccount();
-  if (result.kind === 'throttled') {
-    return '⏳ Permintaan kode terlalu sering. Tunggu sekitar satu menit, lalu ulangi dari menu *2*.';
-  }
-  return genericFailure(result);
+function otpExpired() {
+  return [
+    '⏰ *Kode Verifikasi Kedaluwarsa*',
+    '',
+    'Kode verifikasi sudah tidak berlaku.',
+    'Balas *1* atau *2* untuk meminta kode baru.',
+  ].join('\n');
 }
 
-function genericFailure(result = {}) {
-  const parts = [
+function tooManyAttempts() {
+  return [
+    '⛔ *Terlalu Banyak Percobaan*',
+    '',
+    'Anda telah melebihi batas maksimum percobaan.',
+    `Silakan coba lagi nanti atau hubungi ${adminContact}.`,
+  ].join('\n');
+}
+
+function cooldown(waitSeconds) {
+  const minutes = Math.ceil(waitSeconds / 60);
+  return `⏳ Mohon tunggu *${minutes} menit* sebelum meminta kode verifikasi ulang.`;
+}
+
+function genericFailure() {
+  return [
     '🚫 *Terjadi Kendala*',
     '',
     'Maaf, sistem sedang tidak dapat memproses permintaan Anda.',
-  ];
-  if (result.ref) parts.push(`Kode referensi: ${mono(result.ref)}`);
-  parts.push('', `_Bila masalah berlanjut, hubungi ${adminContact}._`);
-  return parts.join('\n');
+    '',
+    `_Bila masalah berlanjut, hubungi ${adminContact}._`,
+  ].join('\n');
 }
 
 function rateLimited() {
   return [
     `⛔ Terlalu banyak percobaan dalam ${config.limits.windowMinutes} menit terakhir.`,
     '',
-    'Untuk keamanan akun, silakan coba lagi nanti atau hubungi ' + adminContact + '.',
+    `Untuk keamanan akun, silakan coba lagi nanti atau hubungi ${adminContact}.`,
   ].join('\n');
 }
 
@@ -230,15 +226,16 @@ module.exports = {
   registerSuccess,
   alreadyRegistered,
   nimNotFound,
-  noAccount,
   invalidNimFormat,
   otpSent,
   invalidOtpInput,
   askNewPassword,
   weakPassword,
   passwordUpdated,
-  resetFailed,
-  otpRequestFailed,
+  wrongOtp,
+  otpExpired,
+  tooManyAttempts,
+  cooldown,
   genericFailure,
   rateLimited,
 };

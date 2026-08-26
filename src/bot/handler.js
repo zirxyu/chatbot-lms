@@ -3,7 +3,7 @@ const api = require('../services/lms-api');
 const sessionStore = require('./session');
 const rateLimit = require('./rate-limit');
 const msgs = require('./messages');
-const { extractText, fromJid } = require('../utils');
+const { extractText } = require('../utils');
 
 const RE_CANCEL = /^(batal|cancel|stop|keluar|exit|reset)\s*$/i;
 const RE_MENU = /^(menu|mulai|start|halo|hai|hi|hello|assalamu.?alaikum|selamat\s+(pagi|siang|sore|malam))\s*[!.?]?$/i;
@@ -37,24 +37,100 @@ function createHandler(sock) {
       return;
     }
     await send(jid, msgs.checking());
-    const result = await api.registerByNim(nim, fromJid(jid));
-    switch (result.kind) {
-      case 'created':
-        rateLimit.reset(key);
-        await send(jid, msgs.registerSuccess(result));
-        break;
-      case 'exists':
-        rateLimit.reset(key);
-        await send(jid, msgs.alreadyRegistered(result));
-        break;
-      case 'invalid':
-        rateLimit.record(key);
-        await send(jid, msgs.nimNotFound(nim));
-        break;
-      default:
-        await send(jid, msgs.genericFailure(result));
+
+    const checkResult = await api.checkNim(nim);
+    if (checkResult.kind === 'not_found') {
+      rateLimit.record(key);
+      sessionStore.clear(jid);
+      await send(jid, msgs.nimNotFound(nim));
+      return;
+    }
+    if (checkResult.kind === 'already_registered') {
+      rateLimit.reset(key);
+      sessionStore.clear(jid);
+      await send(jid, msgs.alreadyRegistered(checkResult));
+      return;
+    }
+    if (checkResult.kind === 'error') {
+      sessionStore.clear(jid);
+      await send(jid, msgs.genericFailure());
+      return;
+    }
+
+    const otpResult = await api.sendOtp(nim);
+    if (otpResult.kind === 'sent') {
+      rateLimit.reset(key);
+      sessionStore.set(jid, 'REGISTER_OTP', { nim, otpToken: otpResult.otpToken });
+      await send(jid, msgs.otpSent(otpResult));
+      return;
+    }
+    if (otpResult.kind === 'cooldown') {
+      await send(jid, msgs.cooldown(otpResult.waitSeconds));
+      return;
+    }
+    if (otpResult.kind === 'already_registered') {
+      sessionStore.clear(jid);
+      await send(jid, msgs.alreadyRegistered());
+      return;
+    }
+    if (otpResult.kind === 'not_found') {
+      rateLimit.record(key);
+      sessionStore.clear(jid);
+      await send(jid, msgs.nimNotFound(nim));
+      return;
     }
     sessionStore.clear(jid);
+    await send(jid, msgs.genericFailure());
+  }
+
+  async function handleRegisterOtp(jid, raw, data) {
+    const code = raw.replace(/\D/g, '');
+    if (!RE_OTP.test(code)) {
+      await send(jid, msgs.invalidOtpInput());
+      return;
+    }
+    await send(jid, msgs.checking());
+
+    const result = await api.verifyOtp(data.otpToken, code);
+    if (result.kind === 'verified') {
+      sessionStore.set(jid, 'REGISTER_PASSWORD', { nim: data.nim, passwordToken: result.passwordToken });
+      await send(jid, msgs.askNewPassword());
+      return;
+    }
+    if (result.kind === 'wrong_otp') {
+      await send(jid, msgs.wrongOtp(result.attemptsLeft));
+      return;
+    }
+    if (result.kind === 'expired') {
+      sessionStore.clear(jid);
+      await send(jid, msgs.otpExpired());
+      return;
+    }
+    if (result.kind === 'too_many_attempts') {
+      sessionStore.clear(jid);
+      await send(jid, msgs.tooManyAttempts());
+      return;
+    }
+    sessionStore.clear(jid);
+    await send(jid, msgs.genericFailure());
+  }
+
+  async function handleRegisterPassword(jid, raw, data) {
+    const password = raw.trim().replace(/\s+/g, '');
+    if (!RE_PASSWORD.test(password)) {
+      await send(jid, msgs.weakPassword());
+      return;
+    }
+    await send(jid, msgs.checking());
+
+    const result = await api.setPassword(data.passwordToken, password);
+    sessionStore.clear(jid);
+    if (result.kind === 'registered') {
+      rateLimit.reset(`reg:${jid}`);
+      await send(jid, msgs.registerSuccess(result));
+    } else {
+      await send(jid, msgs.genericFailure());
+    }
   }
 
   async function handleResetNim(jid, raw) {
@@ -70,26 +146,71 @@ function createHandler(sock) {
       return;
     }
     await send(jid, msgs.checking());
-    const result = await api.requestOtp(nim, fromJid(jid));
-    if (result.kind === 'sent') {
+
+    const checkResult = await api.checkNim(nim);
+    if (checkResult.kind === 'not_found') {
+      rateLimit.record(key);
+      sessionStore.clear(jid);
+      await send(jid, msgs.nimNotFound(nim));
+      return;
+    }
+    if (checkResult.kind === 'error') {
+      sessionStore.clear(jid);
+      await send(jid, msgs.genericFailure());
+      return;
+    }
+
+    const otpResult = await api.sendOtp(nim);
+    if (otpResult.kind === 'sent') {
       rateLimit.reset(key);
-      sessionStore.set(jid, 'RESET_CODE', { nim });
-      await send(jid, msgs.otpSent(result));
+      sessionStore.set(jid, 'RESET_OTP', { nim, otpToken: otpResult.otpToken });
+      await send(jid, msgs.otpSent(otpResult));
+      return;
+    }
+    if (otpResult.kind === 'cooldown') {
+      await send(jid, msgs.cooldown(otpResult.waitSeconds));
+      return;
+    }
+    if (otpResult.kind === 'not_found') {
+      rateLimit.record(key);
+      sessionStore.clear(jid);
+      await send(jid, msgs.nimNotFound(nim));
       return;
     }
     sessionStore.clear(jid);
-    if (result.kind === 'invalid' || result.kind === 'no_account') rateLimit.record(key);
-    await send(jid, msgs.otpRequestFailed(result, nim));
+    await send(jid, msgs.genericFailure());
   }
 
-  async function handleResetCode(jid, raw, data) {
+  async function handleResetOtp(jid, raw, data) {
     const code = raw.replace(/\D/g, '');
     if (!RE_OTP.test(code)) {
       await send(jid, msgs.invalidOtpInput());
       return;
     }
-    sessionStore.set(jid, 'RESET_PASSWORD', { ...data, code });
-    await send(jid, msgs.askNewPassword());
+    await send(jid, msgs.checking());
+
+    const result = await api.verifyOtp(data.otpToken, code);
+    if (result.kind === 'verified') {
+      sessionStore.set(jid, 'RESET_PASSWORD', { nim: data.nim, passwordToken: result.passwordToken });
+      await send(jid, msgs.askNewPassword());
+      return;
+    }
+    if (result.kind === 'wrong_otp') {
+      await send(jid, msgs.wrongOtp(result.attemptsLeft));
+      return;
+    }
+    if (result.kind === 'expired') {
+      sessionStore.clear(jid);
+      await send(jid, msgs.otpExpired());
+      return;
+    }
+    if (result.kind === 'too_many_attempts') {
+      sessionStore.clear(jid);
+      await send(jid, msgs.tooManyAttempts());
+      return;
+    }
+    sessionStore.clear(jid);
+    await send(jid, msgs.genericFailure());
   }
 
   async function handleResetPassword(jid, raw, data) {
@@ -99,12 +220,13 @@ function createHandler(sock) {
       return;
     }
     await send(jid, msgs.checking());
-    const result = await api.confirmReset(data.nim, data.code, password);
+
+    const result = await api.setPassword(data.passwordToken, password);
     sessionStore.clear(jid);
-    if (result.kind === 'updated') {
+    if (result.kind === 'registered') {
       await send(jid, msgs.passwordUpdated());
     } else {
-      await send(jid, msgs.resetFailed(result));
+      await send(jid, msgs.genericFailure());
     }
   }
 
@@ -137,10 +259,14 @@ function createHandler(sock) {
       switch (current.state) {
         case 'REGISTER_NIM':
           return handleRegisterNim(jid, trimmed);
+        case 'REGISTER_OTP':
+          return handleRegisterOtp(jid, trimmed, current.data);
+        case 'REGISTER_PASSWORD':
+          return handleRegisterPassword(jid, trimmed, current.data);
         case 'RESET_NIM':
           return handleResetNim(jid, trimmed);
-        case 'RESET_CODE':
-          return handleResetCode(jid, trimmed, current.data);
+        case 'RESET_OTP':
+          return handleResetOtp(jid, trimmed, current.data);
         case 'RESET_PASSWORD':
           return handleResetPassword(jid, trimmed, current.data);
         default:
