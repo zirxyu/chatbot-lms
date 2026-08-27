@@ -63,9 +63,9 @@ async function checkNim(nim) {
   }
 }
 
-async function sendOtp(nim) {
+async function sendOtp(nim, email) {
   try {
-    const res = await post(PATHS.sendOtp, { nomer_induk: nim });
+    const res = await post(PATHS.sendOtp, { nomer_induk: nim, email });
     if (res.status === 'otp_sent') {
       return {
         kind: 'sent',

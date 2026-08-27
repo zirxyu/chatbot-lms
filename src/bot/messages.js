@@ -53,6 +53,27 @@ function askNimForRegister() {
   ].join('\n');
 }
 
+function askEmail() {
+  return [
+    '📧 *Masukkan Email*',
+    '',
+    'NIM Anda valid! Sekarang kirimkan alamat email Anda.',
+    'OTP akan dikirim ke email ini.',
+    '',
+    '_Balas *batal* untuk membatalkan._',
+  ].join('\n');
+}
+
+function invalidEmailFormat() {
+  return [
+    '⚠️ *Format Email Tidak Valid*',
+    '',
+    'Masukkan alamat email yang benar (contoh: nama@gmail.com).',
+    '',
+    '_Balas *batal* untuk membatalkan._',
+  ].join('\n');
+}
+
 function askNimForReset() {
   return [
     '🔑 *Ganti Kata Sandi*',
@@ -222,6 +243,8 @@ module.exports = {
   canceled,
   askNimForRegister,
   askNimForReset,
+  askEmail,
+  invalidEmailFormat,
   checking,
   registerSuccess,
   alreadyRegistered,

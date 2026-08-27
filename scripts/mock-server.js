@@ -10,15 +10,14 @@ const log = require('../src/logger');
 const { maskEmail } = require('../src/utils');
 
 const PORT = Number(process.env.PORT) || 4000;
-const API_KEY = process.env.MOCK_API_KEY || 'mock-secret-key';
+const API_KEY = process.env.LMS_API_KEY || 'secret-chatbot-key-smakensaft-unmul';
 const SECRET = process.env.MOCK_SECRET || 'mock-development-secret-change-me';
 const ROOT = path.join(__dirname, '..');
 const DB_FILE = path.join(ROOT, 'data', 'db.json');
 const OUTBOX = path.join(ROOT, 'outbox');
 
-const VALID_NIMS = new Set(
-  JSON.parse(fs.readFileSync(path.join(ROOT, 'data', 'nims.json'), 'utf8'))
-);
+const NIMS_DATA = JSON.parse(fs.readFileSync(path.join(ROOT, 'data', 'nims.json'), 'utf8'));
+const VALID_NIMS = new Map(NIMS_DATA.map((item) => [item.nim, item.name]));
 
 function loadDb() {
   try {
@@ -58,6 +57,19 @@ function signToken(nim, ttlMinutes = 30) {
   const payload = Buffer.from(JSON.stringify({ nim, exp })).toString('base64url');
   const signature = crypto.createHmac('sha256', keyBuf).update(payload).digest('base64url');
   return `${payload}.${signature}`;
+}
+
+function verifyToken(token) {
+  try {
+    const [payload, signature] = token.split('.');
+    const expected = crypto.createHmac('sha256', keyBuf).update(payload).digest('base64url');
+    if (signature !== expected) return null;
+    const data = JSON.parse(Buffer.from(payload, 'base64url').toString());
+    if (data.exp < Date.now()) return null;
+    return data;
+  } catch {
+    return null;
+  }
 }
 
 function generatePassword(length = 12) {
@@ -131,7 +143,7 @@ const esc = (value) =>
 function credentialsTemplate(username, password) {
   return page(
     'Akun Berhasil Dibuat',
-    `<h1>🎓 Akun ${esc(config.appName)} Berhasil Dibuat</h1>
+    `<h1>Akun ${esc(config.appName)} Berhasil Dibuat</h1>
      <p>Selamat! Akun Anda telah aktif. Berikut data login Anda:</p>
      <div class="box">Username&nbsp;: <b>${esc(username)}</b><br>Kata sandi: <b>${esc(password)}</b></div>
      <p>Segera masuk dan ganti kata sandi Anda.</p>
@@ -139,22 +151,10 @@ function credentialsTemplate(username, password) {
   );
 }
 
-function existingAccountTemplate(username, password, resetUrl) {
-  return page(
-    'Informasi Akun Anda',
-    `<h1>🔑 Informasi Akun ${esc(config.appName)}</h1>
-     <p>Akun dengan NIM Anda sudah terdaftar. Berikut data login saat ini:</p>
-     <div class="box">Username&nbsp;: <b>${esc(username)}</b><br>Kata sandi: <b>${esc(password)}</b></div>
-     <p>Anda juga dapat mengganti kata sandi melalui tautan khusus berikut:</p>
-     <a class="btn" href="${esc(resetUrl)}">Ganti Kata Sandi</a>
-     <p style="font-size:12px;color:#6b7280;word-break:break-all;">${esc(resetUrl)}</p>`
-  );
-}
-
 function otpTemplate(code, minutes) {
   return page(
     'Kode Verifikasi Ganti Sandi',
-    `<h1>🔐 Kode Verifikasi</h1>
+    `<h1>Kode Verifikasi</h1>
      <p>Gunakan kode berikut untuk mengganti kata sandi akun LMS Anda:</p>
      <div class="box code">${esc(code)}</div>
      <p>Kode berlaku selama <b>${minutes} menit</b>. Jangan bagikan kode ini kepada siapa pun.</p>`
@@ -164,7 +164,7 @@ function otpTemplate(code, minutes) {
 function passwordChangedTemplate() {
   return page(
     'Kata Sandi Diperbarui',
-    `<h1>✅ Kata Sandi Berhasil Diperbarui</h1>
+    `<h1>Kata Sandi Berhasil Diperbarui</h1>
      <p>Kata sandi akun LMS Anda baru saja diubah melalui verifikasi WhatsApp.</p>
      <p>Bila <b>bukan</b> Anda yang melakukan perubahan, segera hubungi ${esc(config.adminContact)}.</p>`
   );
@@ -174,7 +174,7 @@ const app = express();
 app.use(express.json());
 
 const requireApiKey = (req, res, next) => {
-  if ((req.get('x-api-key') || '') !== API_KEY) {
+  if ((req.get('x-chatbot-token') || '') !== API_KEY) {
     return res.status(401).json({ success: false, status: 'unauthorized', message: 'API key tidak valid' });
   }
   return next();
@@ -184,158 +184,200 @@ app.get('/', (_req, res) => {
   res.json({ service: 'mock-lms-api', ok: true, valid_nims: VALID_NIMS.size });
 });
 
-app.post('/api/auth/wa/register', requireApiKey, async (req, res) => {
+// POST /chatbot/check-nim
+app.post('/chatbot/check-nim', requireApiKey, (req, res) => {
   try {
-    const nim = String(req.body?.nim ?? '').trim();
-    const phone = String(req.body?.phone ?? '').trim();
+    const nim = String(req.body?.nomer_induk ?? '').trim();
     if (!/^[0-9]{6,15}$/.test(nim)) {
-      return res.status(400).json({ success: false, status: 'invalid_request', message: 'Parameter nim tidak valid' });
+      return res.status(400).json({ success: false, status: 'invalid_request', message: 'Parameter nomer_induk tidak valid' });
     }
     if (!VALID_NIMS.has(nim)) {
-      return res.status(404).json({ success: false, status: 'nim_not_found', message: 'NIM tidak terdaftar dalam database akademik' });
+      return res.json({ success: false, status: 'not_found', message: 'NIM tidak terdaftar' });
     }
-
     const existing = db.users[nim];
     if (existing) {
-      const password = decrypt(existing.password_enc);
-      const resetUrl = `${config.appUrl}/reset-password?token=${signToken(nim)}`;
-      await deliver({
-        to: existing.email,
-        subject: `[${config.appName}] Informasi Akun Anda`,
-        html: existingAccountTemplate(existing.username, password, resetUrl),
-      });
-      return res.json({
-        success: true,
-        status: 'account_exists',
-        data: { username: existing.username, email: existing.email, reset_url: resetUrl },
-      });
+      return res.json({ success: true, status: 'already_registered', message: 'Akun sudah terdaftar' });
     }
-
-    const password = generatePassword();
-    const now = new Date().toISOString();
-    const user = {
-      nim,
-      phone,
-      username: `mhs${nim}`,
-      email: `${nim}@student.unmul.ac.id`,
-      password_enc: encrypt(password),
-      created_at: now,
-      updated_at: now,
-    };
-    db.users[nim] = user;
-    saveDb();
-    await deliver({
-      to: user.email,
-      subject: `[${config.appName}] Akun Berhasil Dibuat`,
-      html: credentialsTemplate(user.username, password),
-    });
-    log.info({ nim }, 'Akun mock dibuat');
-    return res.status(201).json({
+    const name = VALID_NIMS.get(nim);
+    return res.json({
       success: true,
-      status: 'account_created',
-      data: { username: user.username, email: user.email },
+      status: 'valid',
+      name,
+      email_masked: '',
     });
   } catch (err) {
-    log.error({ err: err.stack || err.message }, 'Endpoint register gagal');
+    log.error({ err: err.stack || err.message }, 'Endpoint check-nim gagal');
     return res.status(500).json({ success: false, status: 'server_error' });
   }
 });
 
-app.post('/api/auth/wa/password-reset/request', requireApiKey, async (req, res) => {
+// POST /chatbot/send-otp
+app.post('/chatbot/send-otp', requireApiKey, async (req, res) => {
   try {
-    const nim = String(req.body?.nim ?? '').trim();
+    const nim = String(req.body?.nomer_induk ?? '').trim();
+    const email = String(req.body?.email ?? '').trim();
     if (!/^[0-9]{6,15}$/.test(nim)) {
-      return res.status(400).json({ success: false, status: 'invalid_request', message: 'Parameter nim tidak valid' });
+      return res.status(400).json({ success: false, status: 'invalid_request', message: 'Parameter nomer_induk tidak valid' });
+    }
+    if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+      return res.status(400).json({ success: false, status: 'invalid_request', message: 'Parameter email tidak valid' });
     }
     if (!VALID_NIMS.has(nim)) {
-      return res.status(404).json({ success: false, status: 'nim_not_found' });
+      return res.json({ success: false, status: 'not_found', message: 'NIM tidak terdaftar' });
     }
-    const user = db.users[nim];
-    if (!user) {
-      return res.status(404).json({ success: false, status: 'account_not_found', message: 'NIM valid tetapi belum memiliki akun LMS' });
+    const existing = db.users[nim];
+    if (existing) {
+      return res.json({ success: true, status: 'already_registered', message: 'Akun sudah terdaftar' });
     }
 
     const now = Date.now();
     const previous = db.otps[nim];
     if (previous && now - previous.sent_at < 60000) {
-      return res.status(429).json({ success: false, status: 'too_many_requests', message: 'Tunggu satu menit sebelum meminta kode lagi' });
+      const waitSeconds = Math.ceil((60000 - (now - previous.sent_at)) / 1000);
+      return res.json({ success: false, status: 'cooldown', wait_seconds: waitSeconds, message: 'Tunggu sebentar sebelum meminta kode lagi' });
     }
 
     const minutes = 10;
     const code = String(crypto.randomInt(0, 1000000)).padStart(6, '0');
+    const name = VALID_NIMS.get(nim);
+    const otpToken = signToken(nim, minutes);
     db.otps[nim] = {
       hash: sha256(code),
+      email,
       sent_at: now,
       expires_at: now + minutes * 60000,
       attempts: 0,
     };
     saveDb();
+
     await deliver({
-      to: user.email,
-      subject: `[${config.appName}] Kode Verifikasi Ganti Sandi`,
+      to: email,
+      subject: `[${config.appName}] Kode Verifikasi`,
       html: otpTemplate(code, minutes),
     });
+
+    log.info({ nim, email }, 'OTP terkirim');
     return res.json({
       success: true,
       status: 'otp_sent',
-      data: { email_masked: maskEmail(user.email), expires_in_minutes: minutes },
+      email_masked: maskEmail(email),
+      otp_token: otpToken,
     });
   } catch (err) {
-    log.error({ err: err.stack || err.message }, 'Endpoint OTP request gagal');
+    log.error({ err: err.stack || err.message }, 'Endpoint send-otp gagal');
     return res.status(500).json({ success: false, status: 'server_error' });
   }
 });
 
-app.post('/api/auth/wa/password-reset/confirm', requireApiKey, async (req, res) => {
+// POST /chatbot/verify-otp
+app.post('/chatbot/verify-otp', requireApiKey, (req, res) => {
   try {
-    const nim = String(req.body?.nim ?? '').trim();
-    const code = String(req.body?.code ?? '').trim();
-    const newPassword = String(req.body?.new_password ?? '');
-
-    if (!/^(?=.*[A-Za-z])(?=.*\d)\S{8,128}$/.test(newPassword)) {
-      return res.status(422).json({ success: false, status: 'weak_password', message: 'Kata sandi minimal 8 karakter, kombinasi huruf dan angka' });
+    const { otp_token, otp_code } = req.body || {};
+    if (!otp_token || !otp_code) {
+      return res.status(400).json({ success: false, status: 'invalid_request', message: 'Parameter tidak lengkap' });
     }
 
+    const tokenData = verifyToken(otp_token);
+    if (!tokenData) {
+      return res.json({ success: false, status: 'expired', message: 'Token kedaluwarsa' });
+    }
+
+    const nim = tokenData.nim;
     const record = db.otps[nim];
+    if (!record) {
+      return res.json({ success: false, status: 'expired', message: 'OTP tidak ditemukan atau kedaluwarsa' });
+    }
+
     const now = Date.now();
-    if (!record || record.expires_at < now) {
+    if (record.expires_at < now) {
       delete db.otps[nim];
       saveDb();
-      return res.status(400).json({ success: false, status: 'invalid_code', message: 'Kode tidak valid atau kedaluwarsa' });
+      return res.json({ success: false, status: 'expired', message: 'OTP kedaluwarsa' });
     }
 
     record.attempts += 1;
     if (record.attempts > 5) {
       delete db.otps[nim];
       saveDb();
-      return res.status(400).json({ success: false, status: 'invalid_code', message: 'Percobaan melebihi batas, minta kode baru' });
+      return res.json({ success: false, status: 'too_many_attempts', message: 'Terlalu banyak percobaan' });
     }
 
-    if (record.hash !== sha256(code)) {
+    if (record.hash !== sha256(String(otp_code))) {
       saveDb();
-      return res.status(400).json({ success: false, status: 'invalid_code', message: 'Kode salah' });
+      return res.json({ success: false, status: 'wrong_otp', attempts_left: 5 - record.attempts, message: 'Kode salah' });
     }
 
-    const user = db.users[nim];
-    if (!user) {
-      delete db.otps[nim];
-      saveDb();
-      return res.status(404).json({ success: false, status: 'account_not_found' });
-    }
-
-    user.password_enc = encrypt(newPassword);
-    user.updated_at = new Date().toISOString();
     delete db.otps[nim];
     saveDb();
+
+    const passwordToken = signToken(nim, 30);
+    const email = `${nim}@student.unmul.ac.id`;
+    return res.json({
+      success: true,
+      status: 'otp_verified',
+      password_token: passwordToken,
+      email_masked: maskEmail(email),
+    });
+  } catch (err) {
+    log.error({ err: err.stack || err.message }, 'Endpoint verify-otp gagal');
+    return res.status(500).json({ success: false, status: 'server_error' });
+  }
+});
+
+// POST /chatbot/set-password
+app.post('/chatbot/set-password', requireApiKey, async (req, res) => {
+  try {
+    const { password_token, password, password_confirmation } = req.body || {};
+    if (!password_token || !password) {
+      return res.status(400).json({ success: false, status: 'invalid_request', message: 'Parameter tidak lengkap' });
+    }
+    if (password !== password_confirmation) {
+      return res.status(400).json({ success: false, status: 'invalid_request', message: 'Password tidak cocok' });
+    }
+    if (!/^(?=.*[A-Za-z])(?=.*\d)\S{8,128}$/.test(password)) {
+      return res.status(422).json({ success: false, status: 'weak_password', message: 'Kata sandi minimal 8 karakter, kombinasi huruf dan angka' });
+    }
+
+    const tokenData = verifyToken(password_token);
+    if (!tokenData) {
+      return res.json({ success: false, status: 'expired', message: 'Token kedaluwarsa' });
+    }
+
+    const nim = tokenData.nim;
+    const now = new Date().toISOString();
+    const username = `mhs${nim}`;
+    const email = `${nim}@student.unmul.ac.id`;
+
+    if (!db.users[nim]) {
+      db.users[nim] = {
+        nim,
+        username,
+        email,
+        password_enc: encrypt(password),
+        created_at: now,
+        updated_at: now,
+      };
+    } else {
+      db.users[nim].password_enc = encrypt(password);
+      db.users[nim].updated_at = now;
+    }
+    saveDb();
+
     await deliver({
-      to: user.email,
+      to: email,
       subject: `[${config.appName}] Kata Sandi Diperbarui`,
       html: passwordChangedTemplate(),
     });
-    log.info({ nim }, 'Kata sandi mock diperbarui');
-    return res.json({ success: true, status: 'password_updated' });
+
+    log.info({ nim }, 'Password berhasil diatur');
+    return res.json({
+      success: true,
+      status: 'registered',
+      name: `Mahasiswa ${nim}`,
+      email,
+    });
   } catch (err) {
-    log.error({ err: err.stack || err.message }, 'Endpoint OTP confirm gagal');
+    log.error({ err: err.stack || err.message }, 'Endpoint set-password gagal');
     return res.status(500).json({ success: false, status: 'server_error' });
   }
 });

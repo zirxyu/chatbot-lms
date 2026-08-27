@@ -13,6 +13,7 @@ const RE_CHANGE_PASSWORD = /^(2|(ganti|ubah)\s*(kata\s*)?sandi|lupa\s*(kata\s*)?
 
 const RE_OTP = /^\d{6}$/;
 const RE_PASSWORD = /^(?=.*[A-Za-z])(?=.*\d)\S{8,128}$/;
+const RE_EMAIL = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
 const cleanNim = (raw) => raw.replace(/[\s.\-_/]/g, '');
 
@@ -57,10 +58,23 @@ function createHandler(sock) {
       return;
     }
 
-    const otpResult = await api.sendOtp(nim);
+    sessionStore.set(jid, 'REGISTER_EMAIL', { nim });
+    await send(jid, msgs.askEmail());
+  }
+
+  async function handleRegisterEmail(jid, raw, data) {
+    const email = raw.trim();
+    if (!RE_EMAIL.test(email)) {
+      await send(jid, msgs.invalidEmailFormat());
+      return;
+    }
+    await send(jid, msgs.checking());
+
+    const key = `reg:${jid}`;
+    const otpResult = await api.sendOtp(data.nim, email);
     if (otpResult.kind === 'sent') {
       rateLimit.reset(key);
-      sessionStore.set(jid, 'REGISTER_OTP', { nim, otpToken: otpResult.otpToken });
+      sessionStore.set(jid, 'REGISTER_OTP', { nim: data.nim, email, otpToken: otpResult.otpToken });
       await send(jid, msgs.otpSent(otpResult));
       return;
     }
@@ -76,7 +90,7 @@ function createHandler(sock) {
     if (otpResult.kind === 'not_found') {
       rateLimit.record(key);
       sessionStore.clear(jid);
-      await send(jid, msgs.nimNotFound(nim));
+      await send(jid, msgs.nimNotFound(data.nim));
       return;
     }
     sessionStore.clear(jid);
@@ -160,10 +174,23 @@ function createHandler(sock) {
       return;
     }
 
-    const otpResult = await api.sendOtp(nim);
+    sessionStore.set(jid, 'RESET_EMAIL', { nim });
+    await send(jid, msgs.askEmail());
+  }
+
+  async function handleResetEmail(jid, raw, data) {
+    const email = raw.trim();
+    if (!RE_EMAIL.test(email)) {
+      await send(jid, msgs.invalidEmailFormat());
+      return;
+    }
+    await send(jid, msgs.checking());
+
+    const key = `otp:${jid}`;
+    const otpResult = await api.sendOtp(data.nim, email);
     if (otpResult.kind === 'sent') {
       rateLimit.reset(key);
-      sessionStore.set(jid, 'RESET_OTP', { nim, otpToken: otpResult.otpToken });
+      sessionStore.set(jid, 'RESET_OTP', { nim: data.nim, email, otpToken: otpResult.otpToken });
       await send(jid, msgs.otpSent(otpResult));
       return;
     }
@@ -174,7 +201,7 @@ function createHandler(sock) {
     if (otpResult.kind === 'not_found') {
       rateLimit.record(key);
       sessionStore.clear(jid);
-      await send(jid, msgs.nimNotFound(nim));
+      await send(jid, msgs.nimNotFound(data.nim));
       return;
     }
     sessionStore.clear(jid);
@@ -259,12 +286,16 @@ function createHandler(sock) {
       switch (current.state) {
         case 'REGISTER_NIM':
           return handleRegisterNim(jid, trimmed);
+        case 'REGISTER_EMAIL':
+          return handleRegisterEmail(jid, trimmed, current.data);
         case 'REGISTER_OTP':
           return handleRegisterOtp(jid, trimmed, current.data);
         case 'REGISTER_PASSWORD':
           return handleRegisterPassword(jid, trimmed, current.data);
         case 'RESET_NIM':
           return handleResetNim(jid, trimmed);
+        case 'RESET_EMAIL':
+          return handleResetEmail(jid, trimmed, current.data);
         case 'RESET_OTP':
           return handleResetOtp(jid, trimmed, current.data);
         case 'RESET_PASSWORD':
